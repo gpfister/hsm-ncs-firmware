@@ -1,0 +1,24 @@
+# OS artifacts
+.DS_Store
+
+# Build directories
+build/
+build-*/
+*.o
+*.elf
+*.bin
+*.hex
+*.map
+
+# Python environment
+.venv/
+
+# West workspace modules (synchronized via `make sync`)
+.west/
+zephyr/
+modules/
+bootloader/
+nrf/
+nrfxlib/
+tools/
+test/

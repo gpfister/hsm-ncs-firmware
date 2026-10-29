@@ -1,0 +1,25 @@
+manifest:
+  version: "0.13"
+
+  self:
+    path: firmware
+
+  remotes:
+    - name: ncs
+      url-base: https://github.com/nrfconnect
+
+  defaults:
+    remote: ncs
+
+  projects:
+    - name: sdk-nrf
+      repo-path: sdk-nrf
+      revision: v3.4.1
+      import:
+        name-allowlist:
+          - zephyr
+          - mcuboot
+          - nrfxlib
+          - mbedtls
+          - cmsis
+          - hal_nordic

@@ -1,0 +1,26 @@
+[project]
+name = "nrf52840-hms-firmware"
+version = "0.1.0"
+description = "nRF52840 Dongle Hardware Security Module (HMS) Firmware with Dual-Stage Secure Boot"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "west>=1.3.0",
+    "imgtool>=2.1.0",
+    "kconfiglib>=14.1.0",
+    "pyyaml>=6.0",
+    "pyelftools>=0.29",
+    "intelhex>=2.3.0",
+    "cryptography>=42.0.0",
+    "cbor2>=5.6.0",
+    "pyserial>=3.5",
+    "packaging>=23.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv]
+managed = true
+package = false
