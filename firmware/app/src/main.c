@@ -53,6 +53,7 @@ int main(void) {
 
     /* 6. Initialize Dual USB CDC ACM (Console + AT Protocol) */
     usb_serial_init();
+    LOG_INF("Dongle USB Serial (BLE Address): %s", usb_serial_get_ble_address());
 
     LOG_INF("HSM AT Protocol Engine ready. Entering polling loop...");
 

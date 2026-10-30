@@ -10,6 +10,7 @@ extern "C" {
 int usb_serial_init(void);
 void usb_serial_poll(void);
 void usb_serial_write_at_response(const char *resp);
+const char *usb_serial_get_ble_address(void);
 
 #ifdef __cplusplus
 }

@@ -20,9 +20,11 @@
 
 	cdc_acm_uart0: cdc_acm_uart0 {
 		compatible = "zephyr,cdc-acm-uart";
+		label = "Zephyr CDC ACM Console";
 	};
 
 	cdc_acm_uart1: cdc_acm_uart1 {
 		compatible = "zephyr,cdc-acm-uart";
+		label = "nRF52840 HSM AT Interface";
 	};
 };
