@@ -6,3 +6,5 @@ add_library(hsm_core STATIC
 target_include_directories(hsm_core PUBLIC
     include
 )
+
+target_link_libraries(hsm_core PRIVATE zephyr_interface)

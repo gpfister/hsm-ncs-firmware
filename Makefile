@@ -8,7 +8,7 @@ SHELL := /bin/bash
 
 UV ?= uv
 WEST ?= $(UV) run west
-BOARD ?= nrf52840dongle/nrf52840
+BOARD ?= nrf52840dongle/nrf52840/bare
 APP_DIR := firmware/app
 
 BUILD_DIR_PROD := build-prod
@@ -63,7 +63,7 @@ sync: init
 	@if [ ! -d ".west" ]; then \
 		$(WEST) init -l firmware; \
 	fi
-	@$(WEST) update -o depth=1
+	@$(WEST) update -o=--depth=1
 	@echo "[INFO] Exporting Zephyr CMake configuration..."
 	@$(WEST) zephyr-export
 	@echo "[SUCCESS] Workspace synchronized."
@@ -75,6 +75,8 @@ build-prod:
 	@echo " Building Production Firmware (Board: $(BOARD))"
 	@echo "=================================================="
 	@if [ ! -f "$(SIGN_KEY)" ]; then $(ROOT_DIR)/scripts/generate_keys.sh; fi
+	@mkdir -p bootloader && ln -sfn ../../keys bootloader/keys
+	@mkdir -p $(BUILD_DIR_PROD) && ln -sfn ../../keys $(BUILD_DIR_PROD)/keys
 	@$(WEST) build --sysbuild -b $(BOARD) -d $(BUILD_DIR_PROD) $(APP_DIR)
 	@echo "[SUCCESS] Production build complete in $(BUILD_DIR_PROD)/"
 
@@ -83,6 +85,8 @@ build-debug:
 	@echo " Building Debug Firmware (Board: $(BOARD))"
 	@echo "=================================================="
 	@if [ ! -f "$(SIGN_KEY)" ]; then $(ROOT_DIR)/scripts/generate_keys.sh; fi
+	@mkdir -p bootloader && ln -sfn ../../keys bootloader/keys
+	@mkdir -p $(BUILD_DIR_DEBUG) && ln -sfn ../../keys $(BUILD_DIR_DEBUG)/keys
 	@$(WEST) build --sysbuild -b $(BOARD) -d $(BUILD_DIR_DEBUG) $(APP_DIR) -- -DEXTRA_CONF_FILE=$(abspath $(APP_DIR)/debug.conf)
 	@echo "[SUCCESS] Debug build complete in $(BUILD_DIR_DEBUG)/"
 

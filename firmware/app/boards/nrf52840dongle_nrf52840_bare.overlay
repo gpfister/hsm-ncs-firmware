@@ -1,0 +1,28 @@
+/*
+ * Devicetree overlay for nRF52840 Dongle (PCA10059)
+ * Exposes two CDC ACM Virtual COM Ports:
+ *  - cdc_acm_uart0: Zephyr Console & Logging
+ *  - cdc_acm_uart1: YubiHSM 2 API Binary Channel
+ */
+
+/ {
+	chosen {
+		zephyr,console = &cdc_acm_uart0;
+		zephyr,shell-uart = &cdc_acm_uart0;
+		zephyr,uart-mcumgr = &cdc_acm_uart0;
+		zephyr,bt-mon-uart = &cdc_acm_uart0;
+		zephyr,bt-c2h-uart = &cdc_acm_uart0;
+	};
+};
+
+&zephyr_udc0 {
+	/delete-node/ board_cdc_acm_uart;
+
+	cdc_acm_uart0: cdc_acm_uart0 {
+		compatible = "zephyr,cdc-acm-uart";
+	};
+
+	cdc_acm_uart1: cdc_acm_uart1 {
+		compatible = "zephyr,cdc-acm-uart";
+	};
+};

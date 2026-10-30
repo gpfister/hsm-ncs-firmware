@@ -1,6 +1,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/storage/flash_map.h>
 #include <zephyr/dfu/mcuboot.h>
+#include <zephyr/sys/reboot.h>
 #include <zephyr/logging/log.h>
 #include "dfu_service.h"
 

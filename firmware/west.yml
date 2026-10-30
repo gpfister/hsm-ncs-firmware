@@ -12,8 +12,9 @@ manifest:
     remote: ncs
 
   projects:
-    - name: sdk-nrf
+    - name: nrf
       repo-path: sdk-nrf
+      path: nrf
       revision: v3.4.1
       import:
         name-allowlist:
@@ -21,5 +22,10 @@ manifest:
           - mcuboot
           - nrfxlib
           - mbedtls
+          - oberon-psa-crypto
           - cmsis
+          - cmsis_6
           - hal_nordic
+          - zcbor
+          - tf-psa-crypto
+          - segger
