@@ -20,8 +20,8 @@ static void on_keystore_state_changed(bool authenticated, uint8_t retries, uint8
     } else if (authenticated) {
         /* Authenticated / Unlocked -> Solid GREEN */
         led_status_set_state(HSM_STATE_UNLOCKED);
-    } else if (key_count == 0) {
-        /* Unconfigured / Empty -> Pulsating BLUE */
+    } else if (key_count == 0 && !keystore_is_shamir_initialized()) {
+        /* Unconfigured / Empty -> Breathing WHITE */
         led_status_set_state(HSM_STATE_UNCONFIGURED);
     } else {
         /* Configured but locked -> Solid RED */

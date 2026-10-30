@@ -13,6 +13,10 @@ extern "C" {
 #define KEYSTORE_DEFAULT_PIN "123456"
 #define KEYSTORE_MAX_RETRIES 3
 
+#define HSM_EPHEMERAL_PUBKEY_SIZE 65
+#define HSM_GCM_TAG_SIZE 16
+#define HSM_WRAPPED_KEY_SIZE 32
+
 typedef struct {
     bool occupied;
     char algo[16];   /* "EC_P256" */
@@ -78,6 +82,53 @@ int keystore_set_slot(uint8_t slot_id, const char *algo, uint16_t size, const ch
  * Delete key slot.
  */
 int keystore_delete_slot(uint8_t slot_id);
+
+/**
+ * Store master Shamir secret in keystore.
+ */
+int keystore_set_master_secret(const uint8_t *secret_32b);
+
+/**
+ * Verify reconstructed Shamir secret against master secret.
+ * If verified, marks keystore authenticated and returns 0.
+ */
+int keystore_verify_master_secret(const uint8_t *secret_32b);
+
+/**
+ * Check if keystore is initialized with Shamir secret.
+ */
+bool keystore_is_shamir_initialized(void);
+
+/**
+ * Generate ephemeral target EC P-256 keypair for blind migration.
+ * Public key (uncompressed point 0x04 || X || Y) stored in pub_out_65.
+ * Private key retained in volatile memory.
+ */
+int keystore_generate_ephemeral_keypair(uint8_t *pub_out_65);
+
+/**
+ * Perform ECDH hardware wrapping of private key at slot_id using target_pub_65.
+ * Generates ephemeral source keypair, computes ECDH, derives AES-256-GCM key, wraps slot private key.
+ * Immediately zeroizes secrets and invokes self-lock callback.
+ */
+int keystore_wrap_key_ecdh(uint8_t slot_id,
+                           const uint8_t *target_pub_65,
+                           uint8_t *source_pub_65,
+                           uint8_t *ciphertext_out,
+                           uint8_t *tag_16,
+                           size_t *ct_len);
+
+/**
+ * Perform ECDH hardware unwrapping of private key into slot_id using stored target ephemeral private key.
+ * Computes ECDH with source_pub_65, derives AES-256-GCM key, decrypts ciphertext, validates tag_16,
+ * stores imported private key into slot_id.
+ * Immediately zeroizes secrets, clears ephemeral target key, and invokes self-lock callback.
+ */
+int keystore_unwrap_key_ecdh(uint8_t slot_id,
+                             const uint8_t *source_pub_65,
+                             const uint8_t *ciphertext,
+                             size_t ct_len,
+                             const uint8_t *tag_16);
 
 #ifdef __cplusplus
 }

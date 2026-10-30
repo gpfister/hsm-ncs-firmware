@@ -12,6 +12,7 @@ extern "C" {
 #define CC310_P256_PUBKEY_SIZE 65
 #define CC310_P256_SIGNATURE_SIZE 64
 #define CC310_SHA256_DIGEST_SIZE 32
+#define CC310_P256_PRIVKEY_SIZE 32
 
 /**
  * Initialize hardware CryptoCell CC310 / PSA Crypto subsystem.
@@ -43,6 +44,16 @@ int crypto_cc310_sign_hash(uint8_t slot_id, const uint8_t *hash_32b, uint8_t *si
  * Destroy/delete persistent key for the designated slot.
  */
 int crypto_cc310_destroy_key(uint8_t slot_id);
+
+/**
+ * Export raw private scalar (32 bytes) for wrapping during migration.
+ */
+int crypto_cc310_export_p256_privkey(uint8_t slot_id, uint8_t *privkey_32b, size_t *privkey_len);
+
+/**
+ * Import raw private scalar (32 bytes) after unwrapping during migration.
+ */
+int crypto_cc310_import_p256_keypair(uint8_t slot_id, const uint8_t *privkey_32b, size_t privkey_len, uint8_t *pubkey_65b, size_t *pubkey_len);
 
 #ifdef __cplusplus
 }

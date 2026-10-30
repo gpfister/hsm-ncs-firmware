@@ -11,6 +11,15 @@ static const struct gpio_dt_spec s_led_red   = GPIO_DT_SPEC_GET(DT_NODELABEL(led
 static const struct gpio_dt_spec s_led_green = GPIO_DT_SPEC_GET(DT_NODELABEL(led1_green), gpios);
 static const struct gpio_dt_spec s_led_blue  = GPIO_DT_SPEC_GET(DT_NODELABEL(led1_blue), gpios);
 
+/* RGB LED PWM nodes on PCA10059 */
+#if DT_NODE_EXISTS(DT_NODELABEL(red_pwm_led))
+static const struct pwm_dt_spec s_pwm_red = PWM_DT_SPEC_GET(DT_NODELABEL(red_pwm_led));
+#endif
+
+#if DT_NODE_EXISTS(DT_NODELABEL(green_pwm_led))
+static const struct pwm_dt_spec s_pwm_green = PWM_DT_SPEC_GET(DT_NODELABEL(green_pwm_led));
+#endif
+
 #if DT_NODE_EXISTS(DT_NODELABEL(blue_pwm_led))
 static const struct pwm_dt_spec s_pwm_blue = PWM_DT_SPEC_GET(DT_NODELABEL(blue_pwm_led));
 #endif
@@ -18,11 +27,26 @@ static const struct pwm_dt_spec s_pwm_blue = PWM_DT_SPEC_GET(DT_NODELABEL(blue_p
 static volatile hsm_state_t s_current_state = HSM_STATE_UNCONFIGURED;
 static struct k_thread s_led_thread;
 static K_THREAD_STACK_DEFINE(s_led_stack, 1024);
+static struct k_sem s_state_sem;
 
 static void led_thread_fn(void *arg1, void *arg2, void *arg3) {
     ARG_UNUSED(arg1);
     ARG_UNUSED(arg2);
     ARG_UNUSED(arg3);
+
+    bool pwm_red_ready = false;
+    bool pwm_green_ready = false;
+    bool pwm_blue_ready = false;
+
+#if DT_NODE_EXISTS(DT_NODELABEL(red_pwm_led))
+    pwm_red_ready = device_is_ready(s_pwm_red.dev);
+#endif
+#if DT_NODE_EXISTS(DT_NODELABEL(green_pwm_led))
+    pwm_green_ready = device_is_ready(s_pwm_green.dev);
+#endif
+#if DT_NODE_EXISTS(DT_NODELABEL(blue_pwm_led))
+    pwm_blue_ready = device_is_ready(s_pwm_blue.dev);
+#endif
 
     int breath_counter = 0;
     int breath_dir = 1;
@@ -32,58 +56,91 @@ static void led_thread_fn(void *arg1, void *arg2, void *arg3) {
 
         switch (st) {
         case HSM_STATE_UNCONFIGURED: {
-            /* Slowly pulsating blue */
-            gpio_pin_set_dt(&s_led_red, 0);
-            gpio_pin_set_dt(&s_led_green, 0);
+            /*
+             * Synchronous white breathing glow across Red, Green, and Blue channels.
+             * 3.0s total period: 50 steps up + 50 steps down at 30ms/step = 3000ms.
+             */
+            uint32_t duty = (uint32_t)(breath_counter * 2); /* 0% to 100% */
 
-#if DT_NODE_EXISTS(DT_NODELABEL(blue_pwm_led))
-            if (device_is_ready(s_pwm_blue.dev)) {
-                uint32_t pulse = (uint32_t)((uint64_t)s_pwm_blue.period * breath_counter / 100);
-                pwm_set_pulse_dt(&s_pwm_blue, pulse);
-            } else {
-                gpio_pin_set_dt(&s_led_blue, (breath_counter > 50) ? 1 : 0);
+            if (pwm_red_ready) {
+                uint32_t pulse_r = (uint32_t)((uint64_t)s_pwm_red.period * duty / 100);
+                pwm_set_pulse_dt(&s_pwm_red, pulse_r);
             }
-#else
-            gpio_pin_set_dt(&s_led_blue, (breath_counter > 50) ? 1 : 0);
-#endif
+            if (pwm_green_ready) {
+                uint32_t pulse_g = (uint32_t)((uint64_t)s_pwm_green.period * duty / 100);
+                pwm_set_pulse_dt(&s_pwm_green, pulse_g);
+            }
+            if (pwm_blue_ready) {
+                uint32_t pulse_b = (uint32_t)((uint64_t)s_pwm_blue.period * duty / 100);
+                pwm_set_pulse_dt(&s_pwm_blue, pulse_b);
+            }
 
-            breath_counter += breath_dir * 2;
-            if (breath_counter >= 100) {
-                breath_counter = 100;
+            if (!pwm_red_ready || !pwm_green_ready || !pwm_blue_ready) {
+                int on = (duty > 50) ? 1 : 0;
+                gpio_pin_set_dt(&s_led_red, on);
+                gpio_pin_set_dt(&s_led_green, on);
+                gpio_pin_set_dt(&s_led_blue, on);
+            }
+
+            breath_counter += breath_dir;
+            if (breath_counter >= 50) {
+                breath_counter = 50;
                 breath_dir = -1;
             } else if (breath_counter <= 0) {
                 breath_counter = 0;
                 breath_dir = 1;
             }
-            k_msleep(30);
+
+            /* Wait 30ms or wake immediately upon state transition */
+            (void)k_sem_take(&s_state_sem, K_MSEC(30));
             break;
         }
 
         case HSM_STATE_LOCKED: {
-            /* Solid RED */
-#if DT_NODE_EXISTS(DT_NODELABEL(blue_pwm_led))
-            if (device_is_ready(s_pwm_blue.dev)) {
+            /*
+             * Configured & Locked State:
+             * Blue and Green strictly 0% (OFF), Red 100% solid ON.
+             */
+            if (pwm_blue_ready) {
                 pwm_set_pulse_dt(&s_pwm_blue, 0);
             }
-#endif
+            if (pwm_green_ready) {
+                pwm_set_pulse_dt(&s_pwm_green, 0);
+            }
+            if (pwm_red_ready) {
+                pwm_set_pulse_dt(&s_pwm_red, s_pwm_red.period);
+            }
+
             gpio_pin_set_dt(&s_led_blue, 0);
             gpio_pin_set_dt(&s_led_green, 0);
             gpio_pin_set_dt(&s_led_red, 1);
-            k_msleep(100);
+
+            /* Sleep until next state transition signal */
+            (void)k_sem_take(&s_state_sem, K_FOREVER);
             break;
         }
 
         case HSM_STATE_UNLOCKED: {
-            /* Solid GREEN */
-#if DT_NODE_EXISTS(DT_NODELABEL(blue_pwm_led))
-            if (device_is_ready(s_pwm_blue.dev)) {
+            /*
+             * Authenticated State:
+             * Red and Blue strictly OFF (0%), Green 100% solid ON.
+             */
+            if (pwm_red_ready) {
+                pwm_set_pulse_dt(&s_pwm_red, 0);
+            }
+            if (pwm_blue_ready) {
                 pwm_set_pulse_dt(&s_pwm_blue, 0);
             }
-#endif
-            gpio_pin_set_dt(&s_led_blue, 0);
+            if (pwm_green_ready) {
+                pwm_set_pulse_dt(&s_pwm_green, s_pwm_green.period);
+            }
+
             gpio_pin_set_dt(&s_led_red, 0);
+            gpio_pin_set_dt(&s_led_blue, 0);
             gpio_pin_set_dt(&s_led_green, 1);
-            k_msleep(100);
+
+            /* Sleep until next state transition signal */
+            (void)k_sem_take(&s_state_sem, K_FOREVER);
             break;
         }
         }
@@ -91,6 +148,8 @@ static void led_thread_fn(void *arg1, void *arg2, void *arg3) {
 }
 
 int led_status_init(void) {
+    k_sem_init(&s_state_sem, 0, 1);
+
     if (!gpio_is_ready_dt(&s_led_red) || !gpio_is_ready_dt(&s_led_green) || !gpio_is_ready_dt(&s_led_blue)) {
         LOG_WRN("GPIO LED devices not all ready");
     }
@@ -111,4 +170,6 @@ int led_status_init(void) {
 
 void led_status_set_state(hsm_state_t state) {
     s_current_state = state;
+    /* Wake thread immediately (< 50ms) */
+    k_sem_give(&s_state_sem);
 }

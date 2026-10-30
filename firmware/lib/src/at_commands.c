@@ -1,6 +1,7 @@
 #include "hsm/at_commands.h"
 #include "hsm/keystore.h"
 #include "hsm/crypto_cc310.h"
+#include "hsm/sss.h"
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <hal/nrf_ficr.h>
@@ -14,6 +15,33 @@ LOG_MODULE_REGISTER(at_commands, CONFIG_LOG_DEFAULT_LEVEL);
 #define FIRMWARE_VERSION "1.0.0"
 #define HARDWARE_MODEL   "PCA10059"
 #define BOOTLOADER_STAGE "B0+MCUboot"
+
+#define AUTOLOCK_TIMEOUT_SEC 60
+
+static struct k_timer s_autolock_timer;
+static sss_share_t s_submitted_shares[SSS_THRESHOLD];
+static uint8_t s_submitted_count = 0;
+static int64_t s_first_share_time = 0;
+
+static void autolock_timer_expiry(struct k_timer *timer) {
+    ARG_UNUSED(timer);
+    if (keystore_is_authenticated()) {
+        LOG_INF("Auto-lock supervisor timer expired (60s inactivity); locking device");
+        keystore_lock();
+    }
+}
+
+static void restart_autolock_timer(void) {
+    if (keystore_is_authenticated()) {
+        k_timer_start(&s_autolock_timer, K_SECONDS(AUTOLOCK_TIMEOUT_SEC), K_NO_WAIT);
+    }
+}
+
+void at_commands_reset_shares(void) {
+    sss_zeroize(s_submitted_shares, sizeof(s_submitted_shares));
+    s_submitted_count = 0;
+    s_first_share_time = 0;
+}
 
 static int hex_char_to_val(char c) {
     if (c >= '0' && c <= '9') return c - '0';
@@ -52,6 +80,8 @@ void at_commands_format_error(char *resp_buf, size_t max_resp_len, int error_cod
 }
 
 int at_commands_init(void) {
+    at_commands_reset_shares();
+    k_timer_init(&s_autolock_timer, autolock_timer_expiry, NULL);
     return 0;
 }
 
@@ -64,6 +94,14 @@ static void get_device_uid_string(char *uid_buf, size_t buf_len) {
 int at_commands_execute(const char *cmd_line, char *resp_buf, size_t max_resp_len) {
     if (!cmd_line || !resp_buf || max_resp_len < 16) {
         return -1;
+    }
+
+    /* Check share collection timeout */
+    if (s_submitted_count > 0 && s_first_share_time > 0) {
+        if ((k_uptime_get() - s_first_share_time) > (AUTOLOCK_TIMEOUT_SEC * 1000)) {
+            LOG_WRN("Volatile share buffer expired (60s); resetting");
+            at_commands_reset_shares();
+        }
     }
 
     /* Trim leading whitespace */
@@ -83,6 +121,9 @@ int at_commands_execute(const char *cmd_line, char *resp_buf, size_t max_resp_le
     }
 
     const char *p = cmd_line + 2;
+
+    /* Feed activity watchdog on any recognized AT command while authenticated */
+    restart_autolock_timer();
 
     /* 1. AT -> OK */
     if (*p == '\0') {
@@ -122,6 +163,7 @@ int at_commands_execute(const char *cmd_line, char *resp_buf, size_t max_resp_le
 
         int auth_rc = keystore_authenticate(pin);
         if (auth_rc == 0) {
+            restart_autolock_timer();
             snprintf(resp_buf, max_resp_len, "OK\r\n");
         } else if (auth_rc == -2) {
             at_commands_format_error(resp_buf, max_resp_len, CME_ERR_PIN_BLOCKED);
@@ -133,6 +175,8 @@ int at_commands_execute(const char *cmd_line, char *resp_buf, size_t max_resp_le
 
     /* 5. AT+LOCK */
     if (strcmp(p, "+LOCK") == 0 || strcmp(p, "+lock") == 0) {
+        k_timer_stop(&s_autolock_timer);
+        at_commands_reset_shares();
         keystore_lock();
         snprintf(resp_buf, max_resp_len, "OK\r\n");
         return 0;
@@ -140,12 +184,308 @@ int at_commands_execute(const char *cmd_line, char *resp_buf, size_t max_resp_le
 
     /* 6. AT+RESET */
     if (strcmp(p, "+RESET") == 0 || strcmp(p, "+reset") == 0) {
+        k_timer_stop(&s_autolock_timer);
+        at_commands_reset_shares();
         keystore_reset();
         snprintf(resp_buf, max_resp_len, "OK\r\n");
         return 0;
     }
 
-    /* 7. AT+SLOTS? */
+    /* 7. AT+INIT=1 (Shamir 3-of-5 initialization ceremony) */
+    if (strcmp(p, "+INIT=1") == 0 || strcmp(p, "+init=1") == 0) {
+        uint8_t master_secret[SSS_SECRET_SIZE];
+        if (crypto_cc310_get_random(master_secret, sizeof(master_secret)) != 0) {
+            at_commands_format_error(resp_buf, max_resp_len, CME_ERR_CRYPTO_FAILURE);
+            return 0;
+        }
+
+        sss_share_t shares[SSS_TOTAL_SHARES];
+        if (sss_split(master_secret, SSS_SECRET_SIZE, shares, SSS_TOTAL_SHARES, SSS_THRESHOLD) != 0) {
+            sss_zeroize(master_secret, sizeof(master_secret));
+            at_commands_format_error(resp_buf, max_resp_len, CME_ERR_CRYPTO_FAILURE);
+            return 0;
+        }
+
+        keystore_set_master_secret(master_secret);
+        sss_zeroize(master_secret, sizeof(master_secret));
+        at_commands_reset_shares();
+
+        size_t offset = 0;
+        for (int i = 0; i < SSS_TOTAL_SHARES; i++) {
+            char hex_share[SSS_SECRET_SIZE * 2 + 1];
+            hsm_bin2hex(shares[i].data, SSS_SECRET_SIZE, hex_share, sizeof(hex_share));
+            int written = snprintf(resp_buf + offset, max_resp_len - offset,
+                                   "+INIT: %u,%s\r\n", shares[i].index, hex_share);
+            if (written > 0 && (size_t)written < (max_resp_len - offset)) {
+                offset += (size_t)written;
+            }
+        }
+        snprintf(resp_buf + offset, max_resp_len - offset, "OK\r\n");
+
+        /* Device is initialized in locked state (solid RED) */
+        keystore_lock();
+        return 0;
+    }
+
+    /* 8. AT+SHARE=<idx>,<share_hex> */
+    if (strncmp(p, "+SHARE=", 7) == 0 || strncmp(p, "+share=", 7) == 0) {
+        const char *args = p + 7;
+        char *comma = strchr(args, ',');
+        if (!comma) {
+            at_commands_format_error(resp_buf, max_resp_len, CME_ERR_INVALID_PARAMETER);
+            return 0;
+        }
+
+        char idx_str[8];
+        size_t idx_len = (size_t)(comma - args);
+        if (idx_len >= sizeof(idx_str)) {
+            at_commands_format_error(resp_buf, max_resp_len, CME_ERR_INVALID_PARAMETER);
+            return 0;
+        }
+        memcpy(idx_str, args, idx_len);
+        idx_str[idx_len] = '\0';
+
+        int idx = atoi(idx_str);
+        if (idx < 1 || idx > SSS_TOTAL_SHARES) {
+            at_commands_format_error(resp_buf, max_resp_len, CME_ERR_INVALID_PARAMETER);
+            return 0;
+        }
+
+        const char *share_hex = comma + 1;
+        size_t share_hex_len = strlen(share_hex);
+        if (share_hex_len != (SSS_SECRET_SIZE * 2)) {
+            at_commands_format_error(resp_buf, max_resp_len, CME_ERR_INVALID_PARAMETER);
+            return 0;
+        }
+
+        /* Check for duplicate share index submission in current ceremony */
+        for (uint8_t i = 0; i < s_submitted_count; i++) {
+            if (s_submitted_shares[i].index == (uint8_t)idx) {
+                LOG_WRN("Duplicate share index %u rejected", idx);
+                at_commands_format_error(resp_buf, max_resp_len, CME_ERR_DUPLICATE_SHARE);
+                return 0;
+            }
+        }
+
+        if (s_submitted_count >= SSS_THRESHOLD) {
+            /* Already reached quorum */
+            at_commands_format_error(resp_buf, max_resp_len, CME_ERR_INVALID_PARAMETER);
+            return 0;
+        }
+
+        uint8_t share_bytes[SSS_SECRET_SIZE];
+        if (hsm_hex2bin(share_hex, share_hex_len, share_bytes, sizeof(share_bytes)) != 0) {
+            at_commands_format_error(resp_buf, max_resp_len, CME_ERR_INVALID_PARAMETER);
+            return 0;
+        }
+
+        if (s_submitted_count == 0) {
+            s_first_share_time = k_uptime_get();
+        }
+
+        s_submitted_shares[s_submitted_count].index = (uint8_t)idx;
+        memcpy(s_submitted_shares[s_submitted_count].data, share_bytes, SSS_SECRET_SIZE);
+        sss_zeroize(share_bytes, sizeof(share_bytes));
+
+        /* Derive ephemeral commitment word index (11 bits: 0..2047) */
+        uint16_t word_idx = 0;
+        crypto_cc310_get_random((uint8_t *)&word_idx, sizeof(word_idx));
+        word_idx %= 2048;
+
+        s_submitted_count++;
+
+        if (s_submitted_count < SSS_THRESHOLD) {
+            snprintf(resp_buf, max_resp_len, "+SHARE: %u/3 ACCEPTED,WORD=%u\r\nOK\r\n",
+                     s_submitted_count, word_idx);
+            return 0;
+        }
+
+        /* Quorum reached (3 shares) -> Reconstruct secret and verify */
+        uint8_t recovered[SSS_SECRET_SIZE];
+        int rec_rc = sss_recover(s_submitted_shares, SSS_THRESHOLD, recovered, SSS_SECRET_SIZE);
+        if (rec_rc != 0) {
+            at_commands_reset_shares();
+            at_commands_format_error(resp_buf, max_resp_len, CME_ERR_CRYPTO_FAILURE);
+            return 0;
+        }
+
+        int ver_rc = keystore_verify_master_secret(recovered);
+        sss_zeroize(recovered, sizeof(recovered));
+        at_commands_reset_shares();
+
+        if (ver_rc == 0) {
+            restart_autolock_timer();
+            snprintf(resp_buf, max_resp_len, "+SHARE: 3/3 ACCEPTED,QUORUM_MET,WORD=%u\r\nOK\r\n", word_idx);
+        } else {
+            at_commands_format_error(resp_buf, max_resp_len, CME_ERR_CRYPTO_FAILURE);
+        }
+        return 0;
+    }
+
+    /* 9. AT+MIGRATE_TARGET_INIT */
+    if (strcmp(p, "+MIGRATE_TARGET_INIT") == 0 || strcmp(p, "+migrate_target_init") == 0) {
+        uint8_t pub_65[CC310_P256_PUBKEY_SIZE];
+        if (keystore_generate_ephemeral_keypair(pub_65) != 0) {
+            at_commands_format_error(resp_buf, max_resp_len, CME_ERR_CRYPTO_FAILURE);
+            return 0;
+        }
+
+        char pub_hex[CC310_P256_PUBKEY_SIZE * 2 + 1];
+        hsm_bin2hex(pub_65, CC310_P256_PUBKEY_SIZE, pub_hex, sizeof(pub_hex));
+        snprintf(resp_buf, max_resp_len, "+MIGRATE_TARGET_INIT: PUB=\"%s\"\r\nOK\r\n", pub_hex);
+        return 0;
+    }
+
+    /* 10. AT+MIGRATE_WRAP=<slot_id>,<target_pub_hex> */
+    if (strncmp(p, "+MIGRATE_WRAP=", 14) == 0 || strncmp(p, "+migrate_wrap=", 14) == 0) {
+        if (!keystore_is_authenticated()) {
+            at_commands_format_error(resp_buf, max_resp_len, CME_ERR_DEVICE_LOCKED);
+            return 0;
+        }
+
+        const char *args = p + 14;
+        char *comma = strchr(args, ',');
+        if (!comma) {
+            at_commands_format_error(resp_buf, max_resp_len, CME_ERR_INVALID_PARAMETER);
+            return 0;
+        }
+
+        char slot_str[8];
+        size_t slot_len = (size_t)(comma - args);
+        if (slot_len >= sizeof(slot_str)) {
+            at_commands_format_error(resp_buf, max_resp_len, CME_ERR_INVALID_PARAMETER);
+            return 0;
+        }
+        memcpy(slot_str, args, slot_len);
+        slot_str[slot_len] = '\0';
+
+        int slot_id = atoi(slot_str);
+        if (slot_id < 1 || slot_id > KEYSTORE_MAX_SLOTS) {
+            at_commands_format_error(resp_buf, max_resp_len, CME_ERR_INVALID_PARAMETER);
+            return 0;
+        }
+
+        if (!keystore_is_slot_occupied((uint8_t)slot_id)) {
+            at_commands_format_error(resp_buf, max_resp_len, CME_ERR_KEY_NOT_FOUND);
+            return 0;
+        }
+
+        const char *target_pub_hex = comma + 1;
+        size_t target_hex_len = strlen(target_pub_hex);
+        if (target_hex_len != (CC310_P256_PUBKEY_SIZE * 2)) {
+            at_commands_format_error(resp_buf, max_resp_len, CME_ERR_INVALID_PARAMETER);
+            return 0;
+        }
+
+        uint8_t target_pub[CC310_P256_PUBKEY_SIZE];
+        if (hsm_hex2bin(target_pub_hex, target_hex_len, target_pub, sizeof(target_pub)) != 0) {
+            at_commands_format_error(resp_buf, max_resp_len, CME_ERR_INVALID_PARAMETER);
+            return 0;
+        }
+
+        uint8_t source_pub[CC310_P256_PUBKEY_SIZE];
+        uint8_t ciphertext[32];
+        uint8_t tag[16];
+        size_t ct_len = 0;
+
+        int wrap_rc = keystore_wrap_key_ecdh((uint8_t)slot_id, target_pub, source_pub, ciphertext, tag, &ct_len);
+        if (wrap_rc != 0) {
+            at_commands_format_error(resp_buf, max_resp_len, CME_ERR_CRYPTO_FAILURE);
+            return 0;
+        }
+
+        char src_hex[CC310_P256_PUBKEY_SIZE * 2 + 1];
+        char ct_hex[32 * 2 + 1];
+        char tag_hex[16 * 2 + 1];
+        hsm_bin2hex(source_pub, CC310_P256_PUBKEY_SIZE, src_hex, sizeof(src_hex));
+        hsm_bin2hex(ciphertext, 32, ct_hex, sizeof(ct_hex));
+        hsm_bin2hex(tag, 16, tag_hex, sizeof(tag_hex));
+
+        snprintf(resp_buf, max_resp_len,
+                 "+MIGRATE_WRAP: PUB=\"%s\",CT=\"%s\",TAG=\"%s\"\r\nOK\r\n",
+                 src_hex, ct_hex, tag_hex);
+        return 0;
+    }
+
+    /* 11. AT+MIGRATE_UNWRAP=<slot_id>,<source_pub_hex>,<ciphertext_hex>,<tag_hex> */
+    if (strncmp(p, "+MIGRATE_UNWRAP=", 16) == 0 || strncmp(p, "+migrate_unwrap=", 16) == 0) {
+        const char *args = p + 16;
+        char *comma1 = strchr(args, ',');
+        if (!comma1) {
+            at_commands_format_error(resp_buf, max_resp_len, CME_ERR_INVALID_PARAMETER);
+            return 0;
+        }
+        char *comma2 = strchr(comma1 + 1, ',');
+        if (!comma2) {
+            at_commands_format_error(resp_buf, max_resp_len, CME_ERR_INVALID_PARAMETER);
+            return 0;
+        }
+        char *comma3 = strchr(comma2 + 1, ',');
+        if (!comma3) {
+            at_commands_format_error(resp_buf, max_resp_len, CME_ERR_INVALID_PARAMETER);
+            return 0;
+        }
+
+        char slot_str[8];
+        size_t slot_len = (size_t)(comma1 - args);
+        if (slot_len >= sizeof(slot_str)) {
+            at_commands_format_error(resp_buf, max_resp_len, CME_ERR_INVALID_PARAMETER);
+            return 0;
+        }
+        memcpy(slot_str, args, slot_len);
+        slot_str[slot_len] = '\0';
+
+        int slot_id = atoi(slot_str);
+        if (slot_id < 1 || slot_id > KEYSTORE_MAX_SLOTS) {
+            at_commands_format_error(resp_buf, max_resp_len, CME_ERR_INVALID_PARAMETER);
+            return 0;
+        }
+
+        size_t src_len = (size_t)(comma2 - (comma1 + 1));
+        if (src_len != (CC310_P256_PUBKEY_SIZE * 2)) {
+            at_commands_format_error(resp_buf, max_resp_len, CME_ERR_INVALID_PARAMETER);
+            return 0;
+        }
+        uint8_t source_pub[CC310_P256_PUBKEY_SIZE];
+        if (hsm_hex2bin(comma1 + 1, src_len, source_pub, sizeof(source_pub)) != 0) {
+            at_commands_format_error(resp_buf, max_resp_len, CME_ERR_INVALID_PARAMETER);
+            return 0;
+        }
+
+        size_t ct_len = (size_t)(comma3 - (comma2 + 1));
+        if (ct_len != (32 * 2)) {
+            at_commands_format_error(resp_buf, max_resp_len, CME_ERR_INVALID_PARAMETER);
+            return 0;
+        }
+        uint8_t ciphertext[32];
+        if (hsm_hex2bin(comma2 + 1, ct_len, ciphertext, sizeof(ciphertext)) != 0) {
+            at_commands_format_error(resp_buf, max_resp_len, CME_ERR_INVALID_PARAMETER);
+            return 0;
+        }
+
+        const char *tag_hex = comma3 + 1;
+        size_t tag_len = strlen(tag_hex);
+        if (tag_len != (16 * 2)) {
+            at_commands_format_error(resp_buf, max_resp_len, CME_ERR_INVALID_PARAMETER);
+            return 0;
+        }
+        uint8_t tag[16];
+        if (hsm_hex2bin(tag_hex, tag_len, tag, sizeof(tag)) != 0) {
+            at_commands_format_error(resp_buf, max_resp_len, CME_ERR_INVALID_PARAMETER);
+            return 0;
+        }
+
+        int unwrap_rc = keystore_unwrap_key_ecdh((uint8_t)slot_id, source_pub, ciphertext, 32, tag);
+        if (unwrap_rc != 0) {
+            at_commands_format_error(resp_buf, max_resp_len, CME_ERR_CRYPTO_FAILURE);
+            return 0;
+        }
+
+        snprintf(resp_buf, max_resp_len, "OK\r\n");
+        return 0;
+    }
+
+    /* 12. AT+SLOTS? */
     if (strcmp(p, "+SLOTS?") == 0 || strcmp(p, "+slots?") == 0) {
         size_t offset = 0;
         for (uint8_t id = 1; id <= KEYSTORE_MAX_SLOTS; id++) {
@@ -163,7 +503,7 @@ int at_commands_execute(const char *cmd_line, char *resp_buf, size_t max_resp_le
         return 0;
     }
 
-    /* 8. AT+KEYGEN=<id>,<algo> */
+    /* 13. AT+KEYGEN=<id>,<algo> */
     if (strncmp(p, "+KEYGEN=", 8) == 0 || strncmp(p, "+keygen=", 8) == 0) {
         if (!keystore_is_authenticated()) {
             at_commands_format_error(resp_buf, max_resp_len, CME_ERR_DEVICE_LOCKED);
@@ -214,10 +554,13 @@ int at_commands_execute(const char *cmd_line, char *resp_buf, size_t max_resp_le
         hsm_bin2hex(pubkey_65b, pubkey_len, pub_hex, sizeof(pub_hex));
 
         snprintf(resp_buf, max_resp_len, "+KEYGEN: %d,PUB=\"%s\"\r\nOK\r\n", id, pub_hex);
+
+        /* Auto self-lock immediately upon keygen completion */
+        keystore_lock();
         return 0;
     }
 
-    /* 9. AT+PUBKEY=<id> */
+    /* 14. AT+PUBKEY=<id> */
     if (strncmp(p, "+PUBKEY=", 8) == 0 || strncmp(p, "+pubkey=", 8) == 0) {
         const char *id_str = p + 8;
         int id = atoi(id_str);
@@ -235,7 +578,6 @@ int at_commands_execute(const char *cmd_line, char *resp_buf, size_t max_resp_le
         size_t pubkey_len = 0;
         int rc = crypto_cc310_export_p256_pubkey((uint8_t)id, pubkey_65b, &pubkey_len);
         if (rc != 0 || pubkey_len != CC310_P256_PUBKEY_SIZE) {
-            /* Fall back to pubkey cached in slot */
             const keystore_slot_t *slot = keystore_get_slot((uint8_t)id);
             if (slot && slot->pubkey[0] == 0x04) {
                 memcpy(pubkey_65b, slot->pubkey, CC310_P256_PUBKEY_SIZE);
@@ -253,7 +595,7 @@ int at_commands_execute(const char *cmd_line, char *resp_buf, size_t max_resp_le
         return 0;
     }
 
-    /* 10. AT+SIGN=<id>,<hash> */
+    /* 15. AT+SIGN=<id>,<hash> */
     if (strncmp(p, "+SIGN=", 6) == 0 || strncmp(p, "+sign=", 6) == 0) {
         if (!keystore_is_authenticated()) {
             at_commands_format_error(resp_buf, max_resp_len, CME_ERR_DEVICE_LOCKED);
@@ -315,7 +657,7 @@ int at_commands_execute(const char *cmd_line, char *resp_buf, size_t max_resp_le
         return 0;
     }
 
-    /* 11. AT+RANDOM=<len> */
+    /* 16. AT+RANDOM=<len> */
     if (strncmp(p, "+RANDOM=", 8) == 0 || strncmp(p, "+random=", 8) == 0) {
         const char *len_str = p + 8;
         int req_len = atoi(len_str);

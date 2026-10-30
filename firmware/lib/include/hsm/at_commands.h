@@ -18,9 +18,10 @@ extern "C" {
 #define CME_ERR_CRYPTO_FAILURE      6
 #define CME_ERR_BUFFER_OVERFLOW     7
 #define CME_ERR_COMMAND_UNSUPPORTED 8
+#define CME_ERR_DUPLICATE_SHARE     103
 
 /**
- * Initialize AT command processor and related subsystems.
+ * Initialize AT command processor, auto-lock supervisor, and related subsystems.
  */
 int at_commands_init(void);
 
@@ -38,6 +39,11 @@ int at_commands_execute(const char *cmd_line, char *resp_buf, size_t max_resp_le
  * Generate a standard CME error response string.
  */
 void at_commands_format_error(char *resp_buf, size_t max_resp_len, int error_code);
+
+/**
+ * Reset volatile share ceremony buffer.
+ */
+void at_commands_reset_shares(void);
 
 #ifdef __cplusplus
 }
