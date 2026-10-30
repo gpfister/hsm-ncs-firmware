@@ -1,7 +1,7 @@
 [project]
-name = "nrf52840-hms-firmware"
+name = "nrf52840-hsm-firmware"
 version = "0.1.0"
-description = "nRF52840 Dongle Hardware Security Module (HMS) Firmware with Dual-Stage Secure Boot"
+description = "nRF52840 Dongle Hardware Security Module (HSM) Firmware with Dual-Stage Secure Boot"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [

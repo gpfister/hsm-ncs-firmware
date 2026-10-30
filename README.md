@@ -1,6 +1,6 @@
-# nrf52840-hms-firmware
+# nrf52840-hsm-firmware
 
-Firmware for the nRF52840-based Hardware Security Module (HMS) Dongle.
+Firmware for the nRF52840-based Hardware Security Module (HSM) Dongle.
 
 ## Key Features
 - **Dual-Stage Secure Boot**: Immutable B0 bootloader (using ARM CryptoCell CC310) -> Upgradable MCUboot -> Signed firmware image.

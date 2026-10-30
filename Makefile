@@ -1,5 +1,5 @@
 # ==============================================================================
-# nrf52840-hms-firmware Makefile
+# nrf52840-hsm-firmware Makefile
 # NCS workspace firmware lifecycle management
 # ==============================================================================
 
@@ -26,7 +26,7 @@ SIGN_KEY := $(KEYS_DIR)/root-ec-p256.pem
 
 help:
 	@echo "======================================================================="
-	@echo "                   nRF52840 HMS Firmware Build System                  "
+	@echo "                   nRF52840 HSM Firmware Build System                  "
 	@echo "======================================================================="
 	@echo "Usage: make <target> [VARIABLES]"
 	@echo ""

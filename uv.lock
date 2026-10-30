@@ -355,7 +355,7 @@ wheels = [
 ]
 
 [[package]]
-name = "nrf52840-hms-firmware"
+name = "nrf52840-hsm-firmware"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
