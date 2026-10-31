@@ -1,22 +1,42 @@
 # nrf52840-hsm-firmware
 
-Firmware for the nRF52840-based Hardware Security Module (HSM) Dongle.
+Firmware for the nRF52840-based Hardware Security Module (HSM) Dongle (`PCA10059`), built with the nRF Connect SDK v3.4.1 and Zephyr RTOS with sysbuild.
+
+---
 
 ## Key Features
-- **Dual-Stage Secure Boot**: Immutable B0 bootloader (using ARM CryptoCell CC310) -> Upgradable MCUboot -> Signed firmware image.
-- **Root Keys**: Signed with root-level ECDSA P-256 keys (`keys/root-ec-p256.pem`).
-- **Dual USB CDC ACM**: Virtual COM Port 0 for Zephyr kernel logging and console, Port 1 for YubiHSM 2 binary command/response interactions.
-- **Visual Status LED**: Pulsating blue when unconfigured, solid red when locked, solid green when authenticated/unlocked.
-- **YubiHSM 2 API Support**: Implemented in pure logic library (`firmware/lib`).
 
-## Quick Commands
+- **Dual-Stage Secure Boot**: Immutable B0 bootloader (using ARM CryptoCell CC310) $\rightarrow$ Upgradable MCUboot $\rightarrow$ Signed application image.
+- **Cryptographic Hardware Isolation**: ARM CryptoCell CC310 hardware TRNG and ECDSA P-256 acceleration.
+- **Dynamic BLE Address USB Serial**: Reads the factory-burned 48-bit Bluetooth MAC address from `NRF_FICR->DEVICEADDR[1:0]` and formats it as a 12-digit hex serial (`%04X%08X`) dynamically registered via `usb_update_sn_string_descriptor()`.
+- **Dual USB CDC-ACM Composite Interfaces**:
+  - `cdc_acm_uart0` (Interface 0/1): Zephyr kernel console and logger (Protocol ID: `0x0001`, macOS node: `/dev/tty.usbmodem<BLE_ADDR>1`).
+  - `cdc_acm_uart1` (Interface 2/3): HSM AT command & cryptographic operation channel (Protocol ID: `0x0002`, macOS node: `/dev/tty.usbmodem<BLE_ADDR>3`).
+- **Runtime Descriptor Patching**: Traversing `__usb_descriptor_start` dynamically sets interface protocol identifiers and string descriptors (`"Zephyr CDC ACM Console"` and `"nRF52840 HSM AT Interface"`) without modifying upstream Zephyr trees.
+- **Visual Status LED (PCA10059 RGB)**:
+  - Pulsating Blue: Unconfigured / Genesis state.
+  - Solid Red: Configured but locked.
+  - Solid Green: Authenticated and unlocked for cryptographic operations.
+
+---
+
+## Note on Firmware DFU Streaming
+
+> [!NOTE]
+> **DFU Streaming Architecture**:
+> Current firmware builds and executes the pure AT command engine (`AT`, `AT+INFO`, `AT+STATUS`, `AT+AUTH`, `AT+LOCK`, `AT+KEYGEN`, `AT+SIGN`, `AT+PUBKEY`, `AT+RANDOM`) on CDC-ACM UART1. Dual-stage MCUboot signing and candidate partition flash generation (`zephyr.signed.bin`, `merged.hex`) are fully operational. DFU streaming protocol migration (`AT+DFU_CHUNK` and `AT+DFU_APPLY`) will be integrated into the firmware AT parser in a dedicated follow-up feature task.
+
+---
+
+## Build & Flash Commands
+
 ```bash
-make init          # Initialize Python virtualenv and generate root keys
+make init          # Initialize Python virtualenv and verify tools
 make sync          # Synchronize Zephyr and external modules (depth=1)
 make build-prod    # Build production signed firmware with sysbuild
-make build-debug   # Build debug firmware with DEBUG logs
-make flash         # Flash production image via JLink 802007333
-make monitor       # Connect to USB console
+make build-debug   # Build debug firmware with detailed console logging
+make flash         # Flash production image via JLink (S/N: 802007333)
+make monitor       # Connect to USB serial console (115200 8N1)
 make clean         # Clean build files
 make distclean     # Clean build files, Zephyr modules, and .venv
 ```
