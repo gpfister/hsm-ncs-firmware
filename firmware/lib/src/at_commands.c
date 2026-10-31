@@ -182,11 +182,12 @@ int at_commands_execute(const char *cmd_line, char *resp_buf, size_t max_resp_le
         return 0;
     }
 
-    /* 6. AT+RESET */
-    if (strcmp(p, "+RESET") == 0 || strcmp(p, "+reset") == 0) {
+    /* 6. AT+RESET / AT+FACTORYRESET */
+    if (strcmp(p, "+RESET") == 0 || strcmp(p, "+reset") == 0 ||
+        strcmp(p, "+FACTORYRESET") == 0 || strcmp(p, "+factoryreset") == 0) {
         k_timer_stop(&s_autolock_timer);
         at_commands_reset_shares();
-        keystore_reset();
+        keystore_factory_reset();
         snprintf(resp_buf, max_resp_len, "OK\r\n");
         return 0;
     }

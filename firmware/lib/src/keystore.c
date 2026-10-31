@@ -172,6 +172,27 @@ void keystore_reset(void) {
     LOG_INF("Keystore session reset");
 }
 
+int keystore_factory_reset(void) {
+    s_authenticated = false;
+
+    if (s_target_ephemeral_key_id != 0) {
+        (void)psa_destroy_key(s_target_ephemeral_key_id);
+        s_target_ephemeral_key_id = 0;
+    }
+
+    for (uint8_t i = 1; i <= KEYSTORE_MAX_SLOTS; i++) {
+        (void)crypto_cc310_destroy_key(i);
+    }
+
+    sss_zeroize(s_data.master_secret, sizeof(s_data.master_secret));
+    init_defaults();
+    save_to_nvs();
+    notify_state();
+
+    LOG_INF("Factory reset completed: persistent keys destroyed, master secret zeroized, defaults restored");
+    return 0;
+}
+
 bool keystore_is_slot_occupied(uint8_t slot_id) {
     if (slot_id < 1 || slot_id > KEYSTORE_MAX_SLOTS) {
         return false;

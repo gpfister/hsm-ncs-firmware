@@ -64,6 +64,16 @@ void keystore_lock(void);
 void keystore_reset(void);
 
 /**
+ * Irreversible factory reset and cryptographic zeroization.
+ * Destroys all persistent CC310 hardware keys, destroys volatile ephemeral migration keys,
+ * securely wipes master Shamir secret, resets slot table and PIN retries to factory defaults,
+ * commits cleared state to NVS flash, and transitions the HSM into unconfigured state.
+ *
+ * @return 0 on success, negative error code on failure.
+ */
+int keystore_factory_reset(void);
+
+/**
  * Check if slot is occupied.
  */
 bool keystore_is_slot_occupied(uint8_t slot_id);
