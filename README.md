@@ -7,7 +7,7 @@ Firmware for the nRF52840-based Hardware Security Module (HSM) Dongle (`PCA10059
 ## Key Features
 
 - **Dual-Stage Secure Boot**: Immutable B0 bootloader (using ARM CryptoCell CC310) $\rightarrow$ Upgradable MCUboot $\rightarrow$ Signed application image.
-- **Cryptographic Hardware Isolation**: ARM CryptoCell CC310 hardware TRNG and ECDSA P-256 acceleration.
+- **Cryptographic Hardware Isolation & Zeroization**: ARM CryptoCell CC310 hardware TRNG and ECDSA P-256 acceleration. Full hardware zeroization (`AT+RESET` / `AT+FACTORYRESET`) wiping all 32 CC310 persistent key slots, RAM Shamir master secret, restoring default PIN and retries, and writing unconfigured state to NVS.
 - **Dynamic BLE Address USB Serial**: Reads the factory-burned 48-bit Bluetooth MAC address from `NRF_FICR->DEVICEADDR[1:0]` and formats it as a 12-digit hex serial (`%04X%08X`) dynamically registered via `usb_update_sn_string_descriptor()`.
 - **Dual USB CDC-ACM Composite Interfaces**:
   - `cdc_acm_uart0` (Interface 0/1): Zephyr kernel console and logger (Protocol ID: `0x0001`, macOS node: `/dev/tty.usbmodem<BLE_ADDR>1`).
@@ -24,7 +24,7 @@ Firmware for the nRF52840-based Hardware Security Module (HSM) Dongle (`PCA10059
 
 > [!NOTE]
 > **DFU Streaming Architecture**:
-> Current firmware builds and executes the pure AT command engine (`AT`, `AT+INFO`, `AT+STATUS`, `AT+AUTH`, `AT+LOCK`, `AT+KEYGEN`, `AT+SIGN`, `AT+PUBKEY`, `AT+RANDOM`) on CDC-ACM UART1. Dual-stage MCUboot signing and candidate partition flash generation (`zephyr.signed.bin`, `merged.hex`) are fully operational. DFU streaming protocol migration (`AT+DFU_CHUNK` and `AT+DFU_APPLY`) will be integrated into the firmware AT parser in a dedicated follow-up feature task.
+> Current firmware builds and executes the pure AT command engine (`AT`, `AT+INFO`, `AT+STATUS`, `AT+AUTH`, `AT+LOCK`, `AT+RESET`, `AT+FACTORYRESET`, `AT+KEYGEN`, `AT+SIGN`, `AT+PUBKEY`, `AT+RANDOM`) on CDC-ACM UART1. Dual-stage MCUboot signing and candidate partition flash generation (`zephyr.signed.bin`, `merged.hex`) are fully operational. DFU streaming protocol migration (`AT+DFU_CHUNK` and `AT+DFU_APPLY`) will be integrated into the firmware AT parser in a dedicated follow-up feature task.
 
 ---
 
