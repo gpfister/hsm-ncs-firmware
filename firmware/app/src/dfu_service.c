@@ -111,7 +111,23 @@ int dfu_service_write_chunk(uint32_t offset, const uint8_t *data, size_t len) {
         }
     }
 
-    rc = flash_area_write(fa, offset, data, len);
+    /* Align write length to 4-byte flash write word boundary (padding with 0xFF) */
+    const uint8_t *write_buf = data;
+    uint8_t padded_buf[256 + 4];
+    size_t write_len = len;
+
+    size_t rem = len % 4;
+    if (rem != 0) {
+        size_t pad = 4 - rem;
+        write_len = len + pad;
+        if (write_len <= sizeof(padded_buf)) {
+            memcpy(padded_buf, data, len);
+            memset(padded_buf + len, 0xff, pad);
+            write_buf = padded_buf;
+        }
+    }
+
+    rc = flash_area_write(fa, offset, write_buf, write_len);
     flash_area_close(fa);
 
     if (rc != 0) {

@@ -147,11 +147,11 @@ static int usb_serial_patch_descriptors(void)
 				LOG_INF("Patched Interface 0 (Console): proto=0x0001, iInterface=%u",
 					if_desc->iInterface);
 			} else if (if_desc->bInterfaceNumber == 2) {
-				if_desc->bInterfaceProtocol = 0x02;
+				if_desc->bInterfaceProtocol = 0x01;
 				if (hsm_idx > 0) {
 					if_desc->iInterface = (uint8_t)hsm_idx;
 				}
-				LOG_INF("Patched Interface 2 (HSM AT): proto=0x0002, iInterface=%u",
+				LOG_INF("Patched Interface 2 (HSM AT): proto=0x%02x, iInterface=%u",
 					if_desc->bInterfaceProtocol, if_desc->iInterface);
 			}
 		} else if (head->bDescriptorType == USB_DESC_INTERFACE_ASSOC) {
@@ -162,7 +162,7 @@ static int usb_serial_patch_descriptors(void)
 					iad->iFunction = (uint8_t)console_idx;
 				}
 			} else if (iad->bFirstInterface == 2) {
-				iad->bFunctionProtocol = 0x02;
+				iad->bFunctionProtocol = 0x01;
 				if (hsm_idx > 0) {
 					iad->iFunction = (uint8_t)hsm_idx;
 				}
