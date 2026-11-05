@@ -11,7 +11,14 @@ Firmware implementation for the open-source Hardware Security Module (HSM), buil
 ## Key Features
 
 - **Dual-Stage Secure Boot**: Immutable B0 bootloader (using ARM CryptoCell CC310) $\rightarrow$ Upgradable MCUboot $\rightarrow$ Signed application image.
-- **Cryptographic Hardware Isolation & Zeroization**: ARM CryptoCell CC310 hardware TRNG and ECDSA P-256 acceleration. Full hardware zeroization (`AT+RESET` / `AT+FACTORYRESET`) wiping all 32 CC310 persistent key slots, RAM Shamir master secret, restoring default PIN and retries, and writing unconfigured state to NVS.
+- **Dual-Mode Authentication Architecture**:
+  - Distinct persistent authentication methods (`auth_method_t`): `AUTH_METHOD_NONE`, `AUTH_METHOD_PIN`, and `AUTH_METHOD_SHAMIR`.
+  - Passphrase PIN mode supporting up to 64 bytes with 16-byte random salt and SHA-256 hash stored in Non-Volatile Storage (NVS).
+  - 3-of-5 Shamir Secret Sharing threshold mode distributing ephemeral custodian shares during ceremony initialization.
+  - Dedicated initialization commands (`AT+INIT=PIN,<pin>` vs `AT+INIT=SHAMIR`) with re-initialization guards (`+CME ERROR: 41`).
+  - Comprehensive status inspection (`AT+STATUS?`) returning `+STATUS: CONFIGURED=<0|1>,AUTH=<0|1>,METHOD=<NONE|PIN|SHAMIR>,RETRIES=<N>,KEYCOUNT=<K>`.
+  - Strict mutual exclusivity between PIN authentication (`AT+AUTH=<pin>`) and Shamir share submission (`AT+SHARE=<idx>,<share>`) with invalid method enforcement (`+CME ERROR: 42`).
+- **Cryptographic Hardware Isolation & Zeroization**: ARM CryptoCell CC310 hardware TRNG and ECDSA P-256 acceleration. Full hardware zeroization (`AT+RESET` / `AT+FACTORYRESET`) wiping all 32 CC310 persistent key slots, zeroizing PIN salt/hash and RAM Shamir master secret, restoring default retries, and writing unconfigured state (`METHOD=NONE`) to NVS.
 - **Dynamic BLE Address USB Serial**: Reads the factory-burned 48-bit Bluetooth MAC address from `NRF_FICR->DEVICEADDR[1:0]` and formats it as a 12-digit hex serial (`%04X%08X`) dynamically registered via `usb_update_sn_string_descriptor()`.
 - **Dual USB CDC-ACM Composite Interfaces**:
   - `cdc_acm_uart0` (Interface 0/1): Zephyr kernel console and logger (Protocol ID: `0x0001`, macOS node: `/dev/tty.usbmodem<BLE_ADDR>1`).
