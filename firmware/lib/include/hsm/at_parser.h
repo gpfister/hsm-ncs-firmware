@@ -9,7 +9,7 @@
 extern "C" {
 #endif
 
-#define AT_PARSER_MAX_LINE_LEN 512
+#define AT_PARSER_MAX_LINE_LEN 1024
 
 typedef struct {
     char buf[AT_PARSER_MAX_LINE_LEN];

@@ -22,6 +22,15 @@ static struct k_timer s_autolock_timer;
 static sss_share_t s_submitted_shares[SSS_THRESHOLD];
 static uint8_t s_submitted_count = 0;
 static int64_t s_first_share_time = 0;
+static at_dfu_callbacks_t s_dfu_cbs = {0};
+
+void at_commands_register_dfu_callbacks(const at_dfu_callbacks_t *cbs) {
+    if (cbs) {
+        s_dfu_cbs = *cbs;
+    } else {
+        memset(&s_dfu_cbs, 0, sizeof(s_dfu_cbs));
+    }
+}
 
 static void autolock_timer_expiry(struct k_timer *timer) {
     ARG_UNUSED(timer);
@@ -678,6 +687,110 @@ int at_commands_execute(const char *cmd_line, char *resp_buf, size_t max_resp_le
         hsm_bin2hex(rnd_buf, (size_t)req_len, rnd_hex, sizeof(rnd_hex));
 
         snprintf(resp_buf, max_resp_len, "+RANDOM: %s\r\nOK\r\n", rnd_hex);
+        return 0;
+    }
+
+    /* 17. AT+DFU_INFO? */
+    if (strcmp(p, "+DFU_INFO?") == 0 || strcmp(p, "+dfu_info?") == 0) {
+        uint8_t major = 1;
+        uint8_t minor = 0;
+        uint8_t patch = 0;
+        uint32_t active_slot = 0;
+        uint32_t image_size = 0;
+        uint8_t sha256[32] = {0};
+
+        if (s_dfu_cbs.get_info != NULL) {
+            if (s_dfu_cbs.get_info(&major, &minor, &patch, &active_slot, &image_size, sha256) != 0) {
+                at_commands_format_error(resp_buf, max_resp_len, CME_ERR_CRYPTO_FAILURE);
+                return 0;
+            }
+        }
+
+        char sha256_hex[32 * 2 + 1];
+        hsm_bin2hex(sha256, sizeof(sha256), sha256_hex, sizeof(sha256_hex));
+
+        snprintf(resp_buf, max_resp_len,
+                 "+DFU_INFO: VER=\"%u.%u.%u\",SLOT=%u,SIZE=%u,SHA256=\"%s\"\r\nOK\r\n",
+                 major, minor, patch, (unsigned int)active_slot, (unsigned int)image_size, sha256_hex);
+        return 0;
+    }
+
+    /* 18. AT+DFU_CHUNK=<offset>,<hex_data> */
+    if (strncmp(p, "+DFU_CHUNK=", 11) == 0 || strncmp(p, "+dfu_chunk=", 11) == 0) {
+        if (!keystore_is_authenticated()) {
+            at_commands_format_error(resp_buf, max_resp_len, CME_ERR_DEVICE_LOCKED);
+            return 0;
+        }
+
+        const char *args = p + 11;
+        char *comma = strchr(args, ',');
+        if (!comma) {
+            at_commands_format_error(resp_buf, max_resp_len, CME_ERR_INVALID_PARAMETER);
+            return 0;
+        }
+
+        char offset_str[16];
+        size_t offset_len = (size_t)(comma - args);
+        if (offset_len == 0 || offset_len >= sizeof(offset_str)) {
+            at_commands_format_error(resp_buf, max_resp_len, CME_ERR_INVALID_PARAMETER);
+            return 0;
+        }
+        for (size_t i = 0; i < offset_len; i++) {
+            if (!isdigit((unsigned char)args[i])) {
+                at_commands_format_error(resp_buf, max_resp_len, CME_ERR_INVALID_PARAMETER);
+                return 0;
+            }
+        }
+        memcpy(offset_str, args, offset_len);
+        offset_str[offset_len] = '\0';
+
+        char *endptr = NULL;
+        unsigned long parsed_offset = strtoul(offset_str, &endptr, 10);
+        if (endptr == NULL || *endptr != '\0' || parsed_offset > UINT32_MAX) {
+            at_commands_format_error(resp_buf, max_resp_len, CME_ERR_INVALID_PARAMETER);
+            return 0;
+        }
+
+        const char *hex_data = comma + 1;
+        size_t hex_len = strlen(hex_data);
+        if (hex_len < 2 || (hex_len % 2) != 0 || (hex_len / 2) > 256) {
+            at_commands_format_error(resp_buf, max_resp_len, CME_ERR_INVALID_PARAMETER);
+            return 0;
+        }
+
+        uint8_t chunk_buf[256];
+        size_t bin_len = hex_len / 2;
+        if (hsm_hex2bin(hex_data, hex_len, chunk_buf, sizeof(chunk_buf)) != 0) {
+            at_commands_format_error(resp_buf, max_resp_len, CME_ERR_INVALID_PARAMETER);
+            return 0;
+        }
+
+        if (s_dfu_cbs.write_chunk != NULL) {
+            if (s_dfu_cbs.write_chunk((uint32_t)parsed_offset, chunk_buf, bin_len) != 0) {
+                at_commands_format_error(resp_buf, max_resp_len, CME_ERR_CRYPTO_FAILURE);
+                return 0;
+            }
+        }
+
+        snprintf(resp_buf, max_resp_len, "OK\r\n");
+        return 0;
+    }
+
+    /* 19. AT+DFU_APPLY */
+    if (strcmp(p, "+DFU_APPLY") == 0 || strcmp(p, "+dfu_apply") == 0) {
+        if (!keystore_is_authenticated()) {
+            at_commands_format_error(resp_buf, max_resp_len, CME_ERR_DEVICE_LOCKED);
+            return 0;
+        }
+
+        if (s_dfu_cbs.apply != NULL) {
+            if (s_dfu_cbs.apply() != 0) {
+                at_commands_format_error(resp_buf, max_resp_len, CME_ERR_CRYPTO_FAILURE);
+                return 0;
+            }
+        }
+
+        snprintf(resp_buf, max_resp_len, "OK\r\n");
         return 0;
     }
 

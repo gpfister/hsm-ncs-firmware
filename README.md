@@ -20,11 +20,11 @@ Firmware for the nRF52840-based Hardware Security Module (HSM) Dongle (`PCA10059
 
 ---
 
-## Note on Firmware DFU Streaming
+## Firmware DFU Streaming (`AT+DFU_INFO?`, `AT+DFU_CHUNK`, `AT+DFU_APPLY`)
 
 > [!NOTE]
 > **DFU Streaming Architecture**:
-> Current firmware builds and executes the pure AT command engine (`AT`, `AT+INFO`, `AT+STATUS`, `AT+AUTH`, `AT+LOCK`, `AT+RESET`, `AT+FACTORYRESET`, `AT+KEYGEN`, `AT+SIGN`, `AT+PUBKEY`, `AT+RANDOM`) on CDC-ACM UART1. Dual-stage MCUboot signing and candidate partition flash generation (`zephyr.signed.bin`, `merged.hex`) are fully operational. DFU streaming protocol migration (`AT+DFU_CHUNK` and `AT+DFU_APPLY`) will be integrated into the firmware AT parser in a dedicated follow-up feature task.
+> The firmware AT command engine (`AT`, `AT+INFO?`, `AT+STATUS?`, `AT+AUTH`, `AT+LOCK`, `AT+RESET`, `AT+FACTORYRESET`, `AT+KEYGEN`, `AT+SIGN`, `AT+PUBKEY`, `AT+RANDOM`, `AT+DFU_INFO?`, `AT+DFU_CHUNK`, `AT+DFU_APPLY`) runs on CDC-ACM UART1 (`1024`-byte line parser buffer). `AT+DFU_CHUNK=<offset>,<hex_data>` streams up to 256-byte chunks into MCUboot secondary slot (`image_1`), `AT+DFU_APPLY` schedules a test upgrade (`BOOT_UPGRADE_TEST`) and deferred cold reboot, and `dfu_service_init()` automatically confirms the new image (`boot_write_img_confirmed()`) upon successful boot.
 
 ---
 

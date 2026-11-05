@@ -48,8 +48,14 @@ int main(void) {
     /* 4. Initialize AT Command Processor */
     at_commands_init();
 
-    /* 5. Initialize DFU Flash Service */
+    /* 5. Initialize DFU Flash Service & Register AT Callbacks */
     dfu_service_init();
+    static const at_dfu_callbacks_t dfu_cbs = {
+        .write_chunk = dfu_service_write_chunk,
+        .apply = dfu_service_apply,
+        .get_info = dfu_service_get_info,
+    };
+    at_commands_register_dfu_callbacks(&dfu_cbs);
 
     /* 6. Initialize Dual USB CDC ACM (Console + AT Protocol) */
     usb_serial_init();

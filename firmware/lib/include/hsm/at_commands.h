@@ -45,6 +45,21 @@ void at_commands_format_error(char *resp_buf, size_t max_resp_len, int error_cod
  */
 void at_commands_reset_shares(void);
 
+/**
+ * DFU callbacks for flash chunk writing, upgrade application, and slot info query.
+ */
+typedef struct {
+    int (*write_chunk)(uint32_t offset, const uint8_t *data, size_t len);
+    int (*apply)(void);
+    int (*get_info)(uint8_t *major, uint8_t *minor, uint8_t *patch,
+                    uint32_t *active_slot, uint32_t *image_size, uint8_t sha256[32]);
+} at_dfu_callbacks_t;
+
+/**
+ * Register DFU hardware callbacks with the AT command processor.
+ */
+void at_commands_register_dfu_callbacks(const at_dfu_callbacks_t *cbs);
+
 #ifdef __cplusplus
 }
 #endif
