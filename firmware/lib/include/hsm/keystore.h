@@ -12,10 +12,19 @@ extern "C" {
 #define KEYSTORE_MAX_SLOTS 16
 #define KEYSTORE_DEFAULT_PIN "123456"
 #define KEYSTORE_MAX_RETRIES 3
+#define KEYSTORE_MAX_PIN_LEN 64
+#define KEYSTORE_PIN_SALT_LEN 16
+#define KEYSTORE_PIN_HASH_LEN 32
 
 #define HSM_EPHEMERAL_PUBKEY_SIZE 65
 #define HSM_GCM_TAG_SIZE 16
 #define HSM_WRAPPED_KEY_SIZE 32
+
+typedef enum {
+    AUTH_METHOD_NONE = 0,
+    AUTH_METHOD_PIN = 1,
+    AUTH_METHOD_SHAMIR = 2,
+} auth_method_t;
 
 typedef struct {
     bool occupied;
@@ -31,6 +40,36 @@ typedef void (*keystore_state_change_cb_t)(bool authenticated, uint8_t retries, 
  * Initialize persistent keystore and auth supervisor.
  */
 int keystore_init(keystore_state_change_cb_t cb);
+
+/**
+ * Check if the device is configured with an authentication method.
+ */
+bool keystore_is_configured(void);
+
+/**
+ * Get active authentication method.
+ */
+auth_method_t keystore_get_auth_method(void);
+
+/**
+ * Initialize persistent keystore with PIN authentication.
+ * Validates device not yet configured, stores salt/hash, sets auth_method = AUTH_METHOD_PIN,
+ * marks configured, and commits to flash.
+ *
+ * @param pin Null-terminated PIN string
+ * @param pin_len Length of PIN (between 6 and KEYSTORE_MAX_PIN_LEN)
+ * @return 0 on success, negative error code on failure.
+ */
+int keystore_init_pin(const char *pin, size_t pin_len);
+
+/**
+ * Initialize persistent keystore with Shamir secret sharing authentication.
+ * Validates device not yet configured, sets auth_method = AUTH_METHOD_SHAMIR,
+ * marks configured, and commits to flash.
+ *
+ * @return 0 on success, negative error code on failure.
+ */
+int keystore_init_shamir(void);
 
 /**
  * Check if session is currently authenticated.

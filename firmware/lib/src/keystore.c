@@ -16,7 +16,11 @@ LOG_MODULE_REGISTER(keystore, CONFIG_LOG_DEFAULT_LEVEL);
 #define NVS_KEYSTORE_ID 0x1000
 
 typedef struct {
-    char pin[17];
+    auth_method_t auth_method;
+    bool configured;
+    uint8_t pin_salt[KEYSTORE_PIN_SALT_LEN];
+    uint8_t pin_hash[KEYSTORE_PIN_HASH_LEN];
+    char pin[KEYSTORE_MAX_PIN_LEN + 1];
     uint8_t retries;
     bool shamir_initialized;
     uint8_t master_secret[32];
@@ -49,9 +53,17 @@ static void save_to_nvs(void) {
     }
 }
 
+/* Internal SHA256 using PSA Hash */
+static int hsm_sha256(const uint8_t *data, size_t data_len, uint8_t *out_digest) {
+    size_t out_len = 0;
+    psa_status_t status = psa_hash_compute(PSA_ALG_SHA_256, data, data_len, out_digest, 32, &out_len);
+    return (status == PSA_SUCCESS && out_len == 32) ? 0 : -1;
+}
+
 static void init_defaults(void) {
     memset(&s_data, 0, sizeof(s_data));
-    strncpy(s_data.pin, KEYSTORE_DEFAULT_PIN, sizeof(s_data.pin) - 1);
+    s_data.auth_method = AUTH_METHOD_NONE;
+    s_data.configured = false;
     s_data.retries = KEYSTORE_MAX_RETRIES;
     s_data.shamir_initialized = false;
 }
@@ -85,11 +97,12 @@ static void init_nvs(void) {
     LOG_INF("NVS mounted successfully at offset 0x%lx", (unsigned long)s_nvs.offset);
 
     rc = nvs_read(&s_nvs, NVS_KEYSTORE_ID, &s_data, sizeof(s_data));
-    if (rc > 0) {
-        LOG_INF("Loaded keystore from NVS (retries: %u, keys: %u, shamir: %d)",
+    if (rc == sizeof(s_data)) {
+        LOG_INF("Loaded keystore from NVS (configured: %d, method: %d, retries: %u, keys: %u, shamir: %d)",
+                s_data.configured ? 1 : 0, s_data.auth_method,
                 s_data.retries, keystore_get_key_count(), s_data.shamir_initialized ? 1 : 0);
     } else {
-        LOG_INF("No keystore record found in NVS; writing default store");
+        LOG_INF("No valid keystore record found in NVS; writing default store");
         init_defaults();
         save_to_nvs();
     }
@@ -130,13 +143,44 @@ int keystore_authenticate(const char *pin) {
         return -1;
     }
 
+    if (s_data.auth_method != AUTH_METHOD_PIN || !s_data.configured) {
+        return -1;
+    }
+
+    size_t pin_len = strlen(pin);
+    if (pin_len < 1 || pin_len > KEYSTORE_MAX_PIN_LEN) {
+        return -1;
+    }
+
     if (s_data.retries == 0) {
         s_authenticated = false;
         notify_state();
         return -2; /* Blocked */
     }
 
-    if (strncmp(pin, s_data.pin, sizeof(s_data.pin)) == 0) {
+    bool pin_valid = false;
+    uint8_t zero_hash[KEYSTORE_PIN_HASH_LEN] = {0};
+
+    if (memcmp(s_data.pin_hash, zero_hash, KEYSTORE_PIN_HASH_LEN) != 0) {
+        uint8_t buf[KEYSTORE_PIN_SALT_LEN + KEYSTORE_MAX_PIN_LEN];
+        memcpy(buf, s_data.pin_salt, KEYSTORE_PIN_SALT_LEN);
+        memcpy(buf + KEYSTORE_PIN_SALT_LEN, pin, pin_len);
+
+        uint8_t computed_hash[KEYSTORE_PIN_HASH_LEN];
+        if (hsm_sha256(buf, KEYSTORE_PIN_SALT_LEN + pin_len, computed_hash) == 0) {
+            if (memcmp(computed_hash, s_data.pin_hash, KEYSTORE_PIN_HASH_LEN) == 0) {
+                pin_valid = true;
+            }
+            sss_zeroize(computed_hash, sizeof(computed_hash));
+        }
+        sss_zeroize(buf, sizeof(buf));
+    } else if (s_data.pin[0] != '\0') {
+        if (strncmp(pin, s_data.pin, sizeof(s_data.pin)) == 0) {
+            pin_valid = true;
+        }
+    }
+
+    if (pin_valid) {
         s_data.retries = KEYSTORE_MAX_RETRIES;
         s_authenticated = true;
         save_to_nvs();
@@ -154,6 +198,68 @@ int keystore_authenticate(const char *pin) {
     LOG_WRN("PIN auth failed; remaining retries: %u", s_data.retries);
 
     return (s_data.retries == 0) ? -2 : -1;
+}
+
+bool keystore_is_configured(void) {
+    return s_data.configured && (s_data.auth_method != AUTH_METHOD_NONE);
+}
+
+auth_method_t keystore_get_auth_method(void) {
+    return s_data.auth_method;
+}
+
+int keystore_init_pin(const char *pin, size_t pin_len) {
+    if (!pin || pin_len < 6 || pin_len > KEYSTORE_MAX_PIN_LEN) {
+        return -1;
+    }
+    if (keystore_is_configured()) {
+        return -2;
+    }
+
+    if (crypto_cc310_get_random(s_data.pin_salt, KEYSTORE_PIN_SALT_LEN) != 0) {
+        for (size_t i = 0; i < KEYSTORE_PIN_SALT_LEN; i++) {
+            s_data.pin_salt[i] = (uint8_t)(i * 37 + 0x5A);
+        }
+    }
+
+    uint8_t buf[KEYSTORE_PIN_SALT_LEN + KEYSTORE_MAX_PIN_LEN];
+    memcpy(buf, s_data.pin_salt, KEYSTORE_PIN_SALT_LEN);
+    memcpy(buf + KEYSTORE_PIN_SALT_LEN, pin, pin_len);
+
+    if (hsm_sha256(buf, KEYSTORE_PIN_SALT_LEN + pin_len, s_data.pin_hash) != 0) {
+        sss_zeroize(buf, sizeof(buf));
+        return -3;
+    }
+    sss_zeroize(buf, sizeof(buf));
+
+    memset(s_data.pin, 0, sizeof(s_data.pin));
+    memcpy(s_data.pin, pin, pin_len);
+
+    s_data.auth_method = AUTH_METHOD_PIN;
+    s_data.configured = true;
+    s_data.retries = KEYSTORE_MAX_RETRIES;
+    s_authenticated = false;
+
+    save_to_nvs();
+    notify_state();
+    LOG_INF("Keystore initialized with PIN auth (len=%u)", (unsigned int)pin_len);
+    return 0;
+}
+
+int keystore_init_shamir(void) {
+    if (keystore_is_configured()) {
+        return -1;
+    }
+
+    s_data.auth_method = AUTH_METHOD_SHAMIR;
+    s_data.configured = true;
+    s_data.retries = KEYSTORE_MAX_RETRIES;
+    s_authenticated = false;
+
+    save_to_nvs();
+    notify_state();
+    LOG_INF("Keystore initialized with Shamir auth");
+    return 0;
 }
 
 void keystore_lock(void) {
@@ -185,6 +291,10 @@ int keystore_factory_reset(void) {
     }
 
     sss_zeroize(s_data.master_secret, sizeof(s_data.master_secret));
+    sss_zeroize(s_data.pin_salt, sizeof(s_data.pin_salt));
+    sss_zeroize(s_data.pin_hash, sizeof(s_data.pin_hash));
+    sss_zeroize(s_data.pin, sizeof(s_data.pin));
+
     init_defaults();
     save_to_nvs();
     notify_state();
@@ -257,15 +367,10 @@ int keystore_set_master_secret(const uint8_t *secret_32b) {
 }
 
 int keystore_verify_master_secret(const uint8_t *secret_32b) {
-    if (!secret_32b) {
-        return -1;
-    }
-    if (!s_data.shamir_initialized) {
-        /* If factory uninitialized, accepting first quorum initializes it */
-        keystore_set_master_secret(secret_32b);
-        s_authenticated = true;
+    if (!secret_32b || s_data.auth_method != AUTH_METHOD_SHAMIR || !s_data.configured) {
+        s_authenticated = false;
         notify_state();
-        return 0;
+        return -1;
     }
 
     if (memcmp(s_data.master_secret, secret_32b, 32) == 0) {
@@ -320,13 +425,6 @@ int keystore_generate_ephemeral_keypair(uint8_t *pub_out_65) {
 
     LOG_INF("Generated ephemeral target keypair (id=%u)", (unsigned int)s_target_ephemeral_key_id);
     return 0;
-}
-
-/* Internal HMAC-SHA256 using PSA Hash */
-static int hsm_sha256(const uint8_t *data, size_t data_len, uint8_t *out_digest) {
-    size_t out_len = 0;
-    psa_status_t status = psa_hash_compute(PSA_ALG_SHA_256, data, data_len, out_digest, 32, &out_len);
-    return (status == PSA_SUCCESS && out_len == 32) ? 0 : -1;
 }
 
 static int hsm_hmac_sha256(const uint8_t *key, size_t key_len,

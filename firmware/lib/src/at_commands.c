@@ -152,20 +152,39 @@ int at_commands_execute(const char *cmd_line, char *resp_buf, size_t max_resp_le
 
     /* 3. AT+STATUS? */
     if (strcmp(p, "+STATUS?") == 0 || strcmp(p, "+status?") == 0) {
+        uint8_t configured = keystore_is_configured() ? 1 : 0;
         uint8_t auth = keystore_is_authenticated() ? 1 : 0;
+        const char *method_str = "NONE";
+        switch (keystore_get_auth_method()) {
+        case AUTH_METHOD_PIN:
+            method_str = "PIN";
+            break;
+        case AUTH_METHOD_SHAMIR:
+            method_str = "SHAMIR";
+            break;
+        case AUTH_METHOD_NONE:
+        default:
+            method_str = "NONE";
+            break;
+        }
         uint8_t retries = keystore_get_retries();
         uint8_t keycount = keystore_get_key_count();
         snprintf(resp_buf, max_resp_len,
-                 "+STATUS: AUTH=%u,RETRIES=%u,KEYCOUNT=%u\r\nOK\r\n",
-                 auth, retries, keycount);
+                 "+STATUS: CONFIGURED=%u,AUTH=%u,METHOD=%s,RETRIES=%u,KEYCOUNT=%u\r\nOK\r\n",
+                 configured, auth, method_str, retries, keycount);
         return 0;
     }
 
     /* 4. AT+AUTH=<pin> */
     if (strncmp(p, "+AUTH=", 6) == 0 || strncmp(p, "+auth=", 6) == 0) {
+        if (keystore_get_auth_method() == AUTH_METHOD_SHAMIR || !keystore_is_configured()) {
+            at_commands_format_error(resp_buf, max_resp_len, CME_ERR_INVALID_AUTH_MODE);
+            return 0;
+        }
+
         const char *pin = p + 6;
         size_t pin_len = strlen(pin);
-        if (pin_len < 1 || pin_len > 16) {
+        if (pin_len < 1 || pin_len > KEYSTORE_MAX_PIN_LEN) {
             at_commands_format_error(resp_buf, max_resp_len, CME_ERR_INVALID_PARAMETER);
             return 0;
         }
@@ -201,44 +220,77 @@ int at_commands_execute(const char *cmd_line, char *resp_buf, size_t max_resp_le
         return 0;
     }
 
-    /* 7. AT+INIT=1 (Shamir 3-of-5 initialization ceremony) */
-    if (strcmp(p, "+INIT=1") == 0 || strcmp(p, "+init=1") == 0) {
-        uint8_t master_secret[SSS_SECRET_SIZE];
-        if (crypto_cc310_get_random(master_secret, sizeof(master_secret)) != 0) {
-            at_commands_format_error(resp_buf, max_resp_len, CME_ERR_CRYPTO_FAILURE);
+    /* 7. AT+INIT=PIN,<pin> and AT+INIT=SHAMIR */
+    if (strncmp(p, "+INIT=", 6) == 0 || strncmp(p, "+init=", 6) == 0) {
+        if (keystore_is_configured()) {
+            at_commands_format_error(resp_buf, max_resp_len, CME_ERR_ALREADY_CONFIGURED);
             return 0;
         }
 
-        sss_share_t shares[SSS_TOTAL_SHARES];
-        if (sss_split(master_secret, SSS_SECRET_SIZE, shares, SSS_TOTAL_SHARES, SSS_THRESHOLD) != 0) {
-            sss_zeroize(master_secret, sizeof(master_secret));
-            at_commands_format_error(resp_buf, max_resp_len, CME_ERR_CRYPTO_FAILURE);
-            return 0;
-        }
-
-        keystore_set_master_secret(master_secret);
-        sss_zeroize(master_secret, sizeof(master_secret));
-        at_commands_reset_shares();
-
-        size_t offset = 0;
-        for (int i = 0; i < SSS_TOTAL_SHARES; i++) {
-            char hex_share[SSS_SECRET_SIZE * 2 + 1];
-            hsm_bin2hex(shares[i].data, SSS_SECRET_SIZE, hex_share, sizeof(hex_share));
-            int written = snprintf(resp_buf + offset, max_resp_len - offset,
-                                   "+INIT: %u,%s\r\n", shares[i].index, hex_share);
-            if (written > 0 && (size_t)written < (max_resp_len - offset)) {
-                offset += (size_t)written;
+        const char *arg = p + 6;
+        if (strncmp(arg, "PIN,", 4) == 0 || strncmp(arg, "pin,", 4) == 0) {
+            const char *pin = arg + 4;
+            size_t pin_len = strlen(pin);
+            if (pin_len < 6 || pin_len > KEYSTORE_MAX_PIN_LEN) {
+                at_commands_format_error(resp_buf, max_resp_len, CME_ERR_INVALID_PARAMETER);
+                return 0;
             }
-        }
-        snprintf(resp_buf + offset, max_resp_len - offset, "OK\r\n");
 
-        /* Device is initialized in locked state (solid RED) */
-        keystore_lock();
-        return 0;
+            int rc = keystore_init_pin(pin, pin_len);
+            if (rc == 0) {
+                snprintf(resp_buf, max_resp_len, "OK\r\n");
+            } else if (rc == -2) {
+                at_commands_format_error(resp_buf, max_resp_len, CME_ERR_ALREADY_CONFIGURED);
+            } else {
+                at_commands_format_error(resp_buf, max_resp_len, CME_ERR_INVALID_PARAMETER);
+            }
+            return 0;
+        } else if (strcmp(arg, "SHAMIR") == 0 || strcmp(arg, "shamir") == 0 || strcmp(arg, "1") == 0) {
+            uint8_t master_secret[SSS_SECRET_SIZE];
+            if (crypto_cc310_get_random(master_secret, sizeof(master_secret)) != 0) {
+                at_commands_format_error(resp_buf, max_resp_len, CME_ERR_CRYPTO_FAILURE);
+                return 0;
+            }
+
+            sss_share_t shares[SSS_TOTAL_SHARES];
+            if (sss_split(master_secret, SSS_SECRET_SIZE, shares, SSS_TOTAL_SHARES, SSS_THRESHOLD) != 0) {
+                sss_zeroize(master_secret, sizeof(master_secret));
+                at_commands_format_error(resp_buf, max_resp_len, CME_ERR_CRYPTO_FAILURE);
+                return 0;
+            }
+
+            keystore_set_master_secret(master_secret);
+            sss_zeroize(master_secret, sizeof(master_secret));
+            keystore_init_shamir();
+            at_commands_reset_shares();
+
+            size_t offset = 0;
+            for (int i = 0; i < SSS_TOTAL_SHARES; i++) {
+                char hex_share[SSS_SECRET_SIZE * 2 + 1];
+                hsm_bin2hex(shares[i].data, SSS_SECRET_SIZE, hex_share, sizeof(hex_share));
+                int written = snprintf(resp_buf + offset, max_resp_len - offset,
+                                       "+INIT: %u,%s\r\n", shares[i].index, hex_share);
+                if (written > 0 && (size_t)written < (max_resp_len - offset)) {
+                    offset += (size_t)written;
+                }
+            }
+            snprintf(resp_buf + offset, max_resp_len - offset, "OK\r\n");
+
+            /* Device is initialized in locked state (solid RED) */
+            keystore_lock();
+            return 0;
+        } else {
+            at_commands_format_error(resp_buf, max_resp_len, CME_ERR_INVALID_PARAMETER);
+            return 0;
+        }
     }
 
     /* 8. AT+SHARE=<idx>,<share_hex> */
     if (strncmp(p, "+SHARE=", 7) == 0 || strncmp(p, "+share=", 7) == 0) {
+        if (keystore_get_auth_method() == AUTH_METHOD_PIN || !keystore_is_configured()) {
+            at_commands_format_error(resp_buf, max_resp_len, CME_ERR_INVALID_AUTH_MODE);
+            return 0;
+        }
         const char *args = p + 7;
         char *comma = strchr(args, ',');
         if (!comma) {

@@ -30,8 +30,14 @@ else()
     add_executable(test_sss
         tests/test_sss.c
     )
-
     target_link_libraries(test_sss PRIVATE hsm_core)
+
+    add_executable(test_dual_mode
+        tests/test_dual_mode.c
+    )
+    target_link_libraries(test_dual_mode PRIVATE hsm_core)
+
     enable_testing()
     add_test(NAME test_sss COMMAND test_sss)
+    add_test(NAME test_dual_mode COMMAND test_dual_mode)
 endif()
