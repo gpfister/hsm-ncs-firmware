@@ -1,6 +1,10 @@
-# nrf52840-hsm-firmware
+# HSM NCS Firmware
 
-Firmware for the nRF52840-based Hardware Security Module (HSM) Dongle (`PCA10059`), built with the nRF Connect SDK v3.4.1 and Zephyr RTOS with sysbuild.
+Firmware implementation for the open-source Hardware Security Module (HSM), built with the nRF Connect SDK v3.4.1 and Zephyr RTOS using sysbuild.
+
+> [!IMPORTANT]
+> **Hardware Target Support**:
+> This firmware implementation currently **only supports the Nordic Semiconductor nRF52840 USB Dongle (`PCA10059`)**. Support for additional microcontroller targets or secure elements may be introduced in future releases.
 
 ---
 
