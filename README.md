@@ -11,8 +11,8 @@ Firmware for the nRF52840-based Hardware Security Module (HSM) Dongle (`PCA10059
 - **Dynamic BLE Address USB Serial**: Reads the factory-burned 48-bit Bluetooth MAC address from `NRF_FICR->DEVICEADDR[1:0]` and formats it as a 12-digit hex serial (`%04X%08X`) dynamically registered via `usb_update_sn_string_descriptor()`.
 - **Dual USB CDC-ACM Composite Interfaces**:
   - `cdc_acm_uart0` (Interface 0/1): Zephyr kernel console and logger (Protocol ID: `0x0001`, macOS node: `/dev/tty.usbmodem<BLE_ADDR>1`).
-  - `cdc_acm_uart1` (Interface 2/3): HSM AT command & cryptographic operation channel (Protocol ID: `0x0002`, macOS node: `/dev/tty.usbmodem<BLE_ADDR>3`).
-- **Runtime Descriptor Patching**: Traversing `__usb_descriptor_start` dynamically sets interface protocol identifiers and string descriptors (`"Zephyr CDC ACM Console"` and `"nRF52840 HSM AT Interface"`) without modifying upstream Zephyr trees.
+  - `cdc_acm_uart1` (Interface 2/3): HSM AT command & cryptographic operation channel (Protocol ID: `0x0001` per ADR-0013, macOS node: `/dev/tty.usbmodem<BLE_ADDR>3`).
+- **Runtime Descriptor Patching**: Traversing `__usb_descriptor_start` dynamically sets interface protocol identifiers (`0x01` ITU-T V.250 for both CDC-ACM interfaces per ADR-0013 for zero-driver macOS `AppleUSBACMControl` dual enumeration) and user string descriptors (`"Zephyr CDC ACM Console"` and `"nRF52840 HSM AT Interface"`) without modifying upstream Zephyr trees.
 - **Visual Status LED (PCA10059 RGB)**:
   - Pulsating Blue: Unconfigured / Genesis state.
   - Solid Red: Configured but locked.
